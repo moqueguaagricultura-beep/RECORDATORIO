@@ -340,7 +340,11 @@
             speakText(`TAREA ${editingId ? 'ACTUALIZADA' : 'LISTA'}: ${title}.`);
 
             // If mobile, close form
-            if (window.innerWidth < 1024) toggleForm();
+            if (window.innerWidth < 1024) {
+                if (!document.getElementById('formContainer').classList.contains('hidden')) {
+                    toggleForm();
+                }
+            }
         }
 
         function editTask(id) {
@@ -452,7 +456,7 @@
                                             <div class="flex items-center gap-1.5 text-[8px] font-black tracking-widest ${isOverdue ? 'text-red-600' : 'text-gray-400'}">
                                                 <i data-lucide="calendar" class="h-3 w-3"></i>
                                                 <span class="uppercase">${formatDate(task.dueDate)}</span>
-                                                ${task.dueTime ? `<i data-lucide="clock" class="h-3 w-3 ml-0.5"></i><span>${formatTimeAMPM(task.dueTime)}</span>` : ''}
+                                                ${task.dueTime ? `<i data-lucide="clock" class="h-3 w-3 ml-0.5"></i><span>${task.dueTime}</span>` : ''}
                                             </div>
                                         ` : ''}
                                     </div>
@@ -537,9 +541,30 @@
 
                         showToast('⏰', msg);
                         speakText(msg);
+                        showSystemNotification("RECORDATORIO DE TRABAJO", msg);
                     }
                 });
             });
+        }
+
+        function requestNotificationPermission() {
+            if ('Notification' in window && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+                Notification.requestPermission();
+            }
+        }
+
+        function showSystemNotification(title, body) {
+            if ('Notification' in window && Notification.permission === 'granted') {
+                navigator.serviceWorker.ready.then((registration) => {
+                    registration.showNotification(title, {
+                        body: body,
+                        icon: 'data:image/svg+xml,%3Csvg xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22 viewBox%3D%220 0 512 512%22%3E%3Crect width%3D%22512%22 height%3D%22512%22 rx%3D%22100%22 fill%3D%22%236366f1%22%2F%3E%3Cpath d%3D%22M256 120a110 110 0 0 0-110 110c0 100-30 130-30 130h280s-30-30-30-130a110 110 0 0 0-110-110z%22 fill%3D%22white%22%2F%3E%3Cpath d%3D%22M220 380a40 40 0 0 0 72 0%22 fill%3D%22white%22%2F%3E%3C%2Fsvg%3E',
+                        badge: 'data:image/svg+xml,%3Csvg xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22 viewBox%3D%220 0 512 512%22%3E%3Crect width%3D%22512%22 height%3D%22512%22 rx%3D%22100%22 fill%3D%22%236366f1%22%2F%3E%3Cpath d%3D%22M256 120a110 110 0 0 0-110 110c0 100-30 130-30 130h280s-30-30-30-130a110 110 0 0 0-110-110z%22 fill%3D%22white%22%2F%3E%3Cpath d%3D%22M220 380a40 40 0 0 0 72 0%22 fill%3D%22white%22%2F%3E%3C%2Fsvg%3E',
+                        vibrate: [200, 100, 200],
+                        tag: 'work-reminder'
+                    });
+                });
+            }
         }
 
         async function startVoiceInput() {
@@ -568,7 +593,7 @@
             const getResponseStep = (promptText) => {
                 return new Promise(async (resolve) => {
                     // First speak, then listen
-                    await speakTextPromise(promptText, 0.9);
+                    await speakTextPromise(promptText, 1.0);
 
                     const recognition = new webkitSpeechRecognition();
                     recognition.lang = 'es-ES';
@@ -595,7 +620,22 @@
             };
 
             for (const step of steps) {
-                let transcript = await getResponseStep(step.prompt);
+                let transcript = null;
+                let retries = 0;
+                const maxRetries = 2;
+
+                while (!transcript && retries <= maxRetries) {
+                    const prompt = retries === 0 ? step.prompt : "NO TE ESCUCHÉ, POR FAVOR VUELVE A REPETIR.";
+                    transcript = await getResponseStep(prompt);
+
+                    if (!transcript) {
+                        retries++;
+                        if (retries > maxRetries) {
+                            await speakTextPromise("LO SIENTO, NO PUDE ESCUCHARTE. CANCELANDO DICTADO.", 1.0);
+                            return;
+                        }
+                    }
+                }
 
                 if (transcript) {
                     const el = document.getElementById(step.id);
@@ -634,7 +674,7 @@
             setTimeout(() => toast.classList.remove('show'), 4000);
         }
 
-        function toggleForm() {
+        function toggleForm(isBackAction = false) {
             const container = document.getElementById('formContainer');
             const fabIcon = document.getElementById('fabIcon');
             const fab = document.getElementById('fab');
@@ -643,16 +683,34 @@
                 container.classList.remove('hidden');
                 fab.classList.replace('bg-indigo-600', 'bg-gray-800');
                 fabIcon.setAttribute('data-lucide', 'x');
+                // Push state when opening form
+                history.pushState({ formOpen: true }, '');
             } else {
                 container.classList.add('hidden');
                 fab.classList.replace('bg-gray-800', 'bg-indigo-600');
                 fabIcon.setAttribute('data-lucide', 'plus');
+                // If closing manually (not via back button), remove the state
+                if (!isBackAction && history.state && history.state.formOpen) {
+                    history.back();
+                }
             }
             lucide.createIcons();
             if (window.innerWidth < 1024 && !container.classList.contains('hidden')) {
                 window.scrollTo({ top: container.offsetTop - 20, behavior: 'smooth' });
             }
         }
+
+        // Handle physical back button
+        window.addEventListener('popstate', (event) => {
+            const container = document.getElementById('formContainer');
+            if (container && !container.classList.contains('hidden')) {
+                // If form is open, close it without affecting history further
+                toggleForm(true);
+            } else {
+                // Buffer to prevent accidental exit on main screen
+                history.pushState({ main: true }, '');
+            }
+        });
 
         function populateTimeOptions() {
             const datalist = document.getElementById('time-options');
@@ -662,22 +720,13 @@
                 for (let m = 0; m < 60; m += 30) {
                     const hh = h.toString().padStart(2, '0');
                     const mm = m.toString().padStart(2, '0');
-                    const ampm = h >= 12 ? 'PM' : 'AM';
-                    const h12 = h % 12 || 12;
-                    html += `<option value="${hh}:${mm}" label="${h12}:${mm} ${ampm}">`;
+                    html += `<option value="${hh}:${mm}" label="${hh}:${mm}">`;
                 }
             }
             datalist.innerHTML = html;
         }
 
-        function formatTimeAMPM(time24) {
-            if (!time24) return '';
-            const [h, m] = time24.split(':');
-            const hours = parseInt(h);
-            const ampm = hours >= 12 ? 'PM' : 'AM';
-            const h12 = hours % 12 || 12;
-            return `${h12}:${m} ${ampm}`;
-        }
+
 
         // --- Init ---
         populateTimeOptions();
@@ -691,12 +740,16 @@
             populateTimeOptions();
             lucide.createIcons();
 
-            // Register simple SW for PWA support
+            // Register SW for PWA & Notifications
             if ('serviceWorker' in navigator) {
-                const swCode = `self.addEventListener('fetch', (event) => {});`;
-                const blob = new Blob([swCode], { type: 'text/javascript' });
-                const url = URL.createObjectURL(blob);
-                navigator.serviceWorker.register(url);
+                navigator.serviceWorker.register('sw.js')
+                    .then(reg => console.log('SW Registered'))
+                    .catch(err => console.log('SW Error', err));
+                requestNotificationPermission();
+                // Initialize history state
+                history.replaceState({ main: true }, '');
+                // Push an extra state to handle the "exit" buffer
+                history.pushState({ main: true }, '');
             }
         });
     </script>
